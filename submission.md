@@ -1,5 +1,27 @@
 # Submission
 
+## AI Usage
+
+**Describe specifically how you used AI tools during this project: what you asked them to explain, trace, or summarize; what they helped you understand; and where you had to verify something yourself or found that the AI's explanation was incomplete or pointed you in the wrong direction.**
+
+After reading the codebase, I asked Claude to help me with the Codebase Map. It helped summarize what I already knew and made it easier to navigate the codebase because I could always come back here for the summary of anything I wanted to skim. After that, I could go to that file if I thought I needed to see it in more detail.
+
+In terms of tracing, what I would do is read the issue and the affected file in the README, and go looking for the issue there. When I had an idea of what was going wrong, I would ask AI to help me find the bug, which was what I had in mind (using it as a way of double checking what I saw without giving it a bias towards my idea). This would come from me checking the docstring against what the code actually does (Issue 1 and 5 were the clearest examples of this). After understanding that my issue is what I thought it was, I asked AI, what would happen if I implemented my idea, and if it would impact anything else. When I believed it wouldn't impact anything but fix the bug, I asked Claude to implement the fix and to run the pytests.
+
+Because of the process stated above, Claude was able to give me a decent Root Cause Analysis for an issue after it was solved. If I didn't necessarily like the way something was stated in the given explanations, I would change it myself to suit what I thought was a better answer.
+
+At times I had Claude explain to me bits and pieces here and there when it came to SQL. Specifically the outerjoin that happens in issue 3. I am not fully versed in SQL so I used it as a chance to learn more about joining tables.
+
+One thing that I clarified over and over while doing this assignment was to not change any of the code. I did not want Claude to prompt any code changes at all until I explicitly told it to do so (as I wanted to make sure that any ideas I had would satisfy the issue without causing more problems elsewhere).
+
+I had to point Claude in the right direction when trying to figure out the best time length for RECENT_THRESHOLD, which affected Issue 2. After I recognized that the threshhold was too long and was allowing friends activity to be shown from the previous day, Claude was unsure, but landed on a time length as short as 15 minutes, which wouldn't have been helpful given the seed_data. After looking at the data, I thought half an hour would be better and prompted Claude to double check their work, which they admitted was faulty given the seed data. I think this is an example where Claude was unsure and I had to point it in the right direction.
+
+Lastly, I had an idea of what a regression test was thanks to the homework assignment but asked Claude to explain it to me anyways. After learning, I realized that issue 1 had a test that failed until the fix was implemented. Issue 5 also had some tests fail until it was fixed. I believed both were regression tests so I had Claude write that up for me.
+
+## Commit Log
+
+![Picture that shows I commited once per issue fixed in this codebase.](commit_log.png)
+
 ## Codebase Map
 
 ### Routes
@@ -456,3 +478,11 @@ You will get the same song back 3 times because of the three different tags (rap
 - **How I found the root cause:** Traced `routes/playlists.py`'s `get_songs()` into `services/playlist_service.get_playlist_songs()`. Read the function's own docstring, which explicitly states "Note: This function returns all songs in the playlist," then read the implementation, which ends with `return [song.to_dict() for song in songs[:-1]]`. The confidence moment was seeing the docstring's own claim directly contradicted by the last line of the function it documents — `songs[:-1]` slices off the final element of an already-correctly-ordered, fully-fetched list.
 - **The root cause:** After querying all of a playlist's songs in position order, `get_playlist_songs()` returns `songs[:-1]` instead of `songs`, unconditionally dropping the last song in the playlist regardless of playlist size.
 - **My fix and side-effect check:** Change `return [song.to_dict() for song in songs[:-1]]` to `return [song.to_dict() for song in songs]`. To confirm: re-run `pytest tests/test_playlists.py` — both previously-failing tests should pass, and `test_empty_playlist_returns_empty_list` should still pass (an empty list has no last element to worry about, but worth confirming `songs[:-1]` on `[]` — which is `[]` — wasn't accidentally the only thing keeping that test green). Also check a single-song playlist specifically: with the current `[:-1]` bug, a 1-song playlist would silently return `[]` — a sharper version of the same defect worth spot-checking isn't hiding a second issue. Reseed and re-`curl` `GET /playlists/<id>/songs` to confirm all 7 songs return in position order.
+
+## Regression Test
+
+`tests/test_streaks.py::test_streak_increments_on_sunday` is a pre-existing test in the repo (not one I added) that would have caught the Issue 1 bug before it was ever introduced. It verifies that listening on two consecutive days — a fixed Saturday (2024-06-15) followed by a fixed Sunday (2024-06-16) — increments a user's streak from 1 to 2, matching `update_listening_streak()`'s own docstring rule that consecutive-day listens always increment the streak by one.
+
+Against the buggy code, this test failed: `elif days_since_last == 1 and today.weekday() != 6:` only incremented the streak when the current day _wasn't_ a Sunday, so the Sunday listen fell through to the `else` branch and reset the streak back to 1 instead of incrementing it to 2. The test's assertion (`assert u.listening_streak == 2`) caught that directly — `pytest tests/test_streaks.py -v` reported `1 == 2` and failed, before I ever touched the fix. After removing the `and today.weekday() != 6` clause, the same test passes without any change to the test itself.
+
+`tests/test_playlists.py` has two more pre-existing tests that caught the Issue 5 bug the same way. `test_playlist_returns_all_songs` seeds a 5-song playlist and asserts `get_playlist_songs()` returns all 5; `test_playlist_returns_songs_in_order` asserts the returned titles are `["Track 1", "Track 2", "Track 3", "Track 4", "Track 5"]` in that order. Against the buggy `return [song.to_dict() for song in songs[:-1]]`, both failed: the first because it only got back 4 songs, the second because "Track 5" — the last song in the playlist — was missing from the list entirely. Neither test needed to change; once `songs[:-1]` was changed to `songs`, both passed.
