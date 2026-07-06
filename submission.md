@@ -425,3 +425,20 @@ The fixes described below are proposed, not yet applied to the codebase — each
 - **The root cause:** `get_friends_listening_now()` treats any friend listening event with a timestamp within the last 24 hours as "currently listening." A 24-hour window is far too wide for a real-time presence feature — it includes listens from many hours ago, which, depending on time of day, land on the previous calendar day, matching the "shows people from yesterday" complaint.
 
 - **My fix and side-effect check:** Changed `RECENT_THRESHOLD` from `timedelta(hours=24)` to `timedelta(minutes=30)` ([feed_service.py:13](services/feed_service.py#L13)). I initially considered 15 minutes, but checked that against `seed_data.py`'s own "recent events" — they're seeded at 10, 15, and 20 minutes old and are commented as ones that "should appear in 'listening now'" — so 15 minutes would have cut off that third event. 30 minutes is the value the seed data's own comment names, and it clears all three recent events while still excluding the earliest "older" event (2 hours old). To confirm: `get_activity_feed()` doesn't use `RECENT_THRESHOLD` at all (it just takes the most recent N events, unfiltered by recency), so its output is unaffected. Reseeded and re-ran the live reproduction: `GET /feed/<kenji_id>/listening-now` no longer returns nova (her event is 2 hours old), and `GET /feed/<nova_id>/listening-now` still returns darius, simone, and kenji (their 10/15/20-minute-old events). Full test suite re-run afterward: 11 passing, 2 failing — both pre-existing failures from Issue 5's unfixed `songs[:-1]` bug, unrelated to this change.
+
+#### Issue 3: The same song keeps showing up twice in search
+
+- **How I reproduced it:**
+  If you use raw SQL, like so:
+
+SELECT song.id, song.title FROM song
+LEFT OUTER JOIN song_tags ON song.id = song_tags.song_id
+WHERE song.title LIKE '%Crown Heights%'
+
+You will get the same song back 3 times because of the three different tags (rap, hip-hop, boom bap). This doesn't pop up when you use the app itself because under the hood, `db.session.query(Song)` calls unique() which stops a song from showing up more than once (thanks to SQLAlchemy).
+
+- **How I found the root cause:** Traced `routes/songs.py`'s `search()` into `services/search_service.search_songs()`, and noticed the `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` with no `.distinct()` or `.group_by()` afterward — the classic one-to-many join fan-out shape. Confirmed the fan-out at the SQL level as described above, which is what made me confident this is the intended defect rather than a red herring, despite it not reproducing symptomatically right now.
+
+- **The root cause:** `search_songs()` joins `Song` to `song_tags` to make tag data available, but never deduplicates the resulting `Song` rows. A `LEFT OUTER JOIN` against a table with a one-to-many relationship (one song → multiple tag rows) produces one result row per matching tag row, so a song with 3 tags produces 3 rows for every place it matches the search filter. It's currently invisible because SQLAlchemy's legacy `Query` object happens to auto-apply `.unique()` for this exact join shape — a behavior the code doesn't rely on explicitly, so it would resurface immediately if the query were ever rewritten with the newer `session.execute(select(...))` style, which does not auto-dedupe.
+
+- **My fix and side-effect check:** Add `.distinct()` to the query in `search_songs()`, so correctness doesn't depend on undocumented ORM behavior. To confirm: re-run `pytest tests/test_search.py` — should still be 5/5 passing, but now for a structural reason rather than an implementation-detail coincidence. Verify each song's `tags` list in the response is still complete (`.distinct()` dedupes `Song` rows, not the joined tag columns, so `to_dict()`'s own tag lookup is unaffected). Confirm 0-tag and 1-tag songs are unchanged (already covered by the existing tests).
